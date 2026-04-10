@@ -14,6 +14,7 @@ import type {
   SessionStatus,
   TextPart,
   Config as SdkConfig,
+  Workspace,
 } from "@opencode-ai/sdk/v2"
 import type { CliRenderer, ParsedKey, RGBA, SlotMode } from "@opentui/core"
 import type { JSX, SolidPlugin } from "@opentui/solid"
@@ -271,6 +272,10 @@ export type TuiState = {
     directory: string
   }
   readonly vcs: { branch?: string; default_branch?: string; is_worktree?: boolean } | undefined
+  readonly workspace: {
+    list: () => ReadonlyArray<Workspace>
+    get: (workspaceID: string) => Workspace | undefined
+  }
   session: {
     count: () => number
     diff: (sessionID: string) => ReadonlyArray<TuiSidebarFileItem>
