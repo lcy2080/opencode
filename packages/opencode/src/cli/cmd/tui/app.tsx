@@ -196,6 +196,34 @@ export function tui(input: {
 
     const renderer = await createCliRenderer(rendererConfig(input.config))
 
+    // Emergency terminal reset on abnormal exit (OOM, uncaught exception, etc.)
+    // When the process exits without renderer.destroy(), mouse tracking and
+    // Kitty keyboard protocol remain enabled, producing garbage in the shell.
+    const emergencyCleanup = () => {
+      if (renderer.isDestroyed) return
+      try {
+        const fd = process.stdout.fd
+        const sequences = [
+          "\x1b[?1000l", // disable mouse click tracking
+          "\x1b[?1002l", // disable mouse button tracking
+          "\x1b[?1003l", // disable mouse any-event tracking
+          "\x1b[?1006l", // disable SGR mouse mode
+          "\x1b[?1049l", // leave alternate screen buffer
+          "\x1b[?25h",   // show cursor
+          "\x1b[>4;0m",  // reset Kitty keyboard protocol
+          "\x1b[?2004l", // disable bracketed paste
+        ]
+        // Use writeSync to ensure sequences are flushed before exit
+        for (const seq of sequences) {
+          try { require("fs").writeSync(fd, seq) } catch {}
+        }
+        if (process.stdin.isTTY && process.stdin.setRawMode) {
+          try { process.stdin.setRawMode(false) } catch {}
+        }
+      } catch {}
+    }
+    process.on("exit", emergencyCleanup)
+
     await render(() => {
       return (
         <ErrorBoundary
