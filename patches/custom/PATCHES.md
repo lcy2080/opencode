@@ -27,6 +27,7 @@ Version is automatically computed from these two files — **no manual `OPENCODE
 
 ---
 
+
 ## Patch 1: TUI Rendering Optimization
 
 **Files:**
