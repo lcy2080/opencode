@@ -13,10 +13,13 @@ function View(props: { api: TuiPluginApi }) {
   )
   const done = createMemo(() => props.api.kv.get("dismissed_getting_started", false))
   const show = createMemo(() => !has() && !done())
+  const isWorktree = createMemo(() => props.api.state.vcs?.is_worktree ?? false)
   const path = createMemo(() => {
     const dir = props.api.state.path.directory || process.cwd()
     const out = dir.replace(Global.Path.home, "~")
-    const text = props.api.state.vcs?.branch ? out + ":" + props.api.state.vcs.branch : out
+    const branch = props.api.state.vcs?.branch
+    const suffix = isWorktree() ? " [wt]" : ""
+    const text = branch ? out + ":" + branch + suffix : out
     const list = text.split("/")
     return {
       parent: list.slice(0, -1).join("/"),

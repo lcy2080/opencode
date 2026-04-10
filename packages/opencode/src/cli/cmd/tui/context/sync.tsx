@@ -383,6 +383,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
         case "vcs.branch.updated": {
           setStore("vcs", { branch: event.properties.branch })
+          sdk.client.path.get().then((x) => x.data && setStore("path", reconcile(x.data)))
           break
         }
       }

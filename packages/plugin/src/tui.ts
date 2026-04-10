@@ -271,7 +271,7 @@ export type TuiState = {
     worktree: string
     directory: string
   }
-  readonly vcs: { branch?: string } | undefined
+  readonly vcs: { branch?: string; default_branch?: string; is_worktree?: boolean } | undefined
   readonly workspace: {
     list: () => ReadonlyArray<Workspace>
     get: (workspaceID: string) => Workspace | undefined
