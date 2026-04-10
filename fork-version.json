@@ -1,0 +1,4 @@
+{
+  "version": "1.0.0",
+  "description": "Fork-specific version. Combined with upstream version as {upstream}-oc-{fork}"
+}

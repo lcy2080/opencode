@@ -3,6 +3,15 @@
 These patches are maintained on top of upstream `anomalyco/opencode` dev branch.
 Use `script/sync-upstream.sh` to rebase when upstream updates.
 
+## Versioning
+
+Format: `{upstream}-oc-{fork}` (e.g., `1.4.2-oc-1.0.0`)
+
+- **upstream**: `packages/opencode/package.json` version (auto-updated on sync)
+- **fork**: `fork-version.json` version (manually bumped for fork-specific changes)
+
+Bump fork version when adding new patches or features. Reset is not needed on upstream sync.
+
 ## Patch 1: TUI Rendering Optimization
 
 **Files:**
