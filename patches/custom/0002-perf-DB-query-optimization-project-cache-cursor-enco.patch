@@ -1,0 +1,128 @@
+From d2a649137a4327ac0e996790a3bdbae04dfff2db Mon Sep 17 00:00:00 2001
+From: lcy2080 <lcy2080@onioncrew.com>
+Date: Fri, 10 Apr 2026 11:46:01 +0900
+Subject: [PATCH 2/3] perf: DB query optimization - project cache, cursor
+ encoding, legacy fallback
+
+- Add 5s TTL project metadata cache in listGlobal() to avoid redundant DB queries
+- Cache null sentinel for missing project IDs to prevent repeated lookups
+- Replace JSON+Base64 cursor encoding with simple string format (id|time)
+- Add legacy base64url cursor decode fallback for backward compatibility
+- Update cursor test and add legacy decode test
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ packages/opencode/src/session/index.ts        | 28 +++++++++++++++----
+ packages/opencode/src/session/message-v2.ts   |  7 ++++-
+ .../test/session/messages-pagination.test.ts  | 12 ++++++--
+ 3 files changed, 38 insertions(+), 9 deletions(-)
+
+diff --git a/packages/opencode/src/session/index.ts b/packages/opencode/src/session/index.ts
+index 2e68f22ed..fdc67d0d4 100644
+--- a/packages/opencode/src/session/index.ts
++++ b/packages/opencode/src/session/index.ts
+@@ -768,6 +768,11 @@ export namespace Session {
+     }
+   }
+ 
++  // Project metadata cache for listGlobal
++  const projectCache = new Map<string, ProjectInfo>()
++  let projectCacheTime = 0
++  const PROJECT_CACHE_TTL = 5000 // 5 seconds
++
+   export function* listGlobal(input?: {
+     directory?: string
+     roots?: boolean
+@@ -811,28 +816,39 @@ export namespace Session {
+       return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all()
+     })
+ 
+-    const ids = [...new Set(rows.map((row) => row.project_id))]
+-    const projects = new Map<string, ProjectInfo>()
++    const now = Date.now()
++    if (now - projectCacheTime > PROJECT_CACHE_TTL) {
++      projectCache.clear()
++      projectCacheTime = now
++    }
++
++    const missingIds = [...new Set(rows.map((row) => row.project_id))].filter((id) => !projectCache.has(id))
+ 
+-    if (ids.length > 0) {
++    if (missingIds.length > 0) {
+       const items = Database.use((db) =>
+         db
+           .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
+           .from(ProjectTable)
+-          .where(inArray(ProjectTable.id, ids))
++          .where(inArray(ProjectTable.id, missingIds))
+           .all(),
+       )
++      const foundIds = new Set<string>()
+       for (const item of items) {
+-        projects.set(item.id, {
++        foundIds.add(item.id)
++        projectCache.set(item.id, {
+           id: item.id,
+           name: item.name ?? undefined,
+           worktree: item.worktree,
+         })
+       }
++      // Cache null for missing project IDs to avoid repeated lookups
++      for (const id of missingIds) {
++        if (!foundIds.has(id)) projectCache.set(id, null as unknown as ProjectInfo)
++      }
+     }
+ 
+     for (const row of rows) {
+-      const project = projects.get(row.project_id) ?? null
++      const project = projectCache.get(row.project_id) ?? null
+       yield { ...fromRow(row), project }
+     }
+   }
+diff --git a/packages/opencode/src/session/message-v2.ts b/packages/opencode/src/session/message-v2.ts
+index 61c159646..391d391ef 100644
+--- a/packages/opencode/src/session/message-v2.ts
++++ b/packages/opencode/src/session/message-v2.ts
+@@ -519,9 +519,14 @@ export namespace MessageV2 {
+ 
+   export const cursor = {
+     encode(input: Cursor) {
+-      return Buffer.from(JSON.stringify(input)).toString("base64url")
++      return `${input.id}|${input.time}`
+     },
+     decode(input: string) {
++      const sep = input.lastIndexOf("|")
++      if (sep !== -1) {
++        return { id: input.slice(0, sep) as MessageID, time: Number(input.slice(sep + 1)) }
++      }
++      // Fallback: legacy base64url+JSON format
+       return Cursor.parse(JSON.parse(Buffer.from(input, "base64url").toString("utf8")))
+     },
+   }
+diff --git a/packages/opencode/test/session/messages-pagination.test.ts b/packages/opencode/test/session/messages-pagination.test.ts
+index bb9df6aea..d7983d4d6 100644
+--- a/packages/opencode/test/session/messages-pagination.test.ts
++++ b/packages/opencode/test/session/messages-pagination.test.ts
+@@ -797,9 +797,17 @@ describe("MessageV2.cursor", () => {
+     expect(decoded.time).toBe(1234567890.5)
+   })
+ 
+-  test("encoded cursor is base64url", () => {
++  test("encoded cursor is valid format", () => {
+     const encoded = MessageV2.cursor.encode({ id: MessageID.ascending(), time: 0 })
+-    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/)
++    expect(encoded).toMatch(/^[A-Za-z0-9_|-]+$/)
++  })
++
++  test("decode handles legacy base64url cursor", () => {
++    const input = { id: MessageID.ascending(), time: 1234567890 }
++    const legacy = Buffer.from(JSON.stringify(input)).toString("base64url")
++    const decoded = MessageV2.cursor.decode(legacy)
++    expect(decoded.id).toBe(input.id)
++    expect(decoded.time).toBe(input.time)
+   })
+ })
+ 
+-- 
+2.45.1.windows.1
+
