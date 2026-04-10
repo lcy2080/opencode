@@ -25,7 +25,7 @@ import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, onMount } from "solid-js"
+import { batch, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util/log"
 import type { Path } from "@opencode-ai/sdk"
 import type { Workspace } from "@opencode-ai/sdk/v2"
@@ -109,6 +109,38 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     })
 
     const sdk = useSDK()
+
+    // Batched delta updates: accumulate deltas and flush every 50ms
+    const pendingDeltas = new Map<string, { messageID: string; partID: string; field: string; delta: string }>()
+    let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null
+    const DELTA_FLUSH_INTERVAL = 50 // ms
+
+    function flushDeltas() {
+      deltaFlushTimer = null
+      if (pendingDeltas.size === 0) return
+
+      const entries = [...pendingDeltas.values()]
+      pendingDeltas.clear()
+
+      batch(() => {
+        for (const entry of entries) {
+          const parts = store.part[entry.messageID]
+          if (!parts) continue
+          const result = Binary.search(parts, entry.partID, (p) => p.id)
+          if (!result.found) continue
+          setStore(
+            "part",
+            entry.messageID,
+            produce((draft) => {
+              const part = draft[result.index]
+              const field = entry.field as keyof typeof part
+              const existing = part[field] as string | undefined
+              ;(part[field] as string) = (existing ?? "") + entry.delta
+            }),
+          )
+        }
+      })
+    }
 
     async function syncWorkspaces() {
       const result = await sdk.client.experimental.workspace.list().catch(() => undefined)
@@ -312,20 +344,21 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         case "message.part.delta": {
-          const parts = store.part[event.properties.messageID]
-          if (!parts) break
-          const result = Binary.search(parts, event.properties.partID, (p) => p.id)
-          if (!result.found) break
-          setStore(
-            "part",
-            event.properties.messageID,
-            produce((draft) => {
-              const part = draft[result.index]
-              const field = event.properties.field as keyof typeof part
-              const existing = part[field] as string | undefined
-              ;(part[field] as string) = (existing ?? "") + event.properties.delta
-            }),
-          )
+          const key = `${event.properties.messageID}:${event.properties.partID}:${event.properties.field}`
+          const existing = pendingDeltas.get(key)
+          if (existing) {
+            existing.delta += event.properties.delta
+          } else {
+            pendingDeltas.set(key, {
+              messageID: event.properties.messageID,
+              partID: event.properties.partID,
+              field: event.properties.field,
+              delta: event.properties.delta,
+            })
+          }
+          if (!deltaFlushTimer) {
+            deltaFlushTimer = setTimeout(flushDeltas, DELTA_FLUSH_INTERVAL)
+          }
           break
         }
 
@@ -451,6 +484,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     onMount(() => {
       bootstrap()
+    })
+
+    onCleanup(() => {
+      if (deltaFlushTimer) {
+        clearTimeout(deltaFlushTimer)
+        deltaFlushTimer = null
+      }
     })
 
     const fullSyncedSessions = new Set<string>()
