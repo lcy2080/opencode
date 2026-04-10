@@ -797,9 +797,17 @@ describe("MessageV2.cursor", () => {
     expect(decoded.time).toBe(1234567890.5)
   })
 
-  test("encoded cursor is base64url", () => {
+  test("encoded cursor is valid format", () => {
     const encoded = MessageV2.cursor.encode({ id: MessageID.ascending(), time: 0 })
-    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(encoded).toMatch(/^[A-Za-z0-9_|-]+$/)
+  })
+
+  test("decode handles legacy base64url cursor", () => {
+    const input = { id: MessageID.ascending(), time: 1234567890 }
+    const legacy = Buffer.from(JSON.stringify(input)).toString("base64url")
+    const decoded = MessageV2.cursor.decode(legacy)
+    expect(decoded.id).toBe(input.id)
+    expect(decoded.time).toBe(input.time)
   })
 })
 

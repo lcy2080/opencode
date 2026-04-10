@@ -519,9 +519,14 @@ export namespace MessageV2 {
 
   export const cursor = {
     encode(input: Cursor) {
-      return Buffer.from(JSON.stringify(input)).toString("base64url")
+      return `${input.id}|${input.time}`
     },
     decode(input: string) {
+      const sep = input.lastIndexOf("|")
+      if (sep !== -1) {
+        return { id: input.slice(0, sep) as MessageID, time: Number(input.slice(sep + 1)) }
+      }
+      // Fallback: legacy base64url+JSON format
       return Cursor.parse(JSON.parse(Buffer.from(input, "base64url").toString("utf8")))
     },
   }

@@ -768,6 +768,11 @@ export namespace Session {
     }
   }
 
+  // Project metadata cache for listGlobal
+  const projectCache = new Map<string, ProjectInfo>()
+  let projectCacheTime = 0
+  const PROJECT_CACHE_TTL = 5000 // 5 seconds
+
   export function* listGlobal(input?: {
     directory?: string
     roots?: boolean
@@ -811,28 +816,39 @@ export namespace Session {
       return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all()
     })
 
-    const ids = [...new Set(rows.map((row) => row.project_id))]
-    const projects = new Map<string, ProjectInfo>()
+    const now = Date.now()
+    if (now - projectCacheTime > PROJECT_CACHE_TTL) {
+      projectCache.clear()
+      projectCacheTime = now
+    }
 
-    if (ids.length > 0) {
+    const missingIds = [...new Set(rows.map((row) => row.project_id))].filter((id) => !projectCache.has(id))
+
+    if (missingIds.length > 0) {
       const items = Database.use((db) =>
         db
           .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
           .from(ProjectTable)
-          .where(inArray(ProjectTable.id, ids))
+          .where(inArray(ProjectTable.id, missingIds))
           .all(),
       )
+      const foundIds = new Set<string>()
       for (const item of items) {
-        projects.set(item.id, {
+        foundIds.add(item.id)
+        projectCache.set(item.id, {
           id: item.id,
           name: item.name ?? undefined,
           worktree: item.worktree,
         })
       }
+      // Cache null for missing project IDs to avoid repeated lookups
+      for (const id of missingIds) {
+        if (!foundIds.has(id)) projectCache.set(id, null as unknown as ProjectInfo)
+      }
     }
 
     for (const row of rows) {
-      const project = projects.get(row.project_id) ?? null
+      const project = projectCache.get(row.project_id) ?? null
       yield { ...fromRow(row), project }
     }
   }
