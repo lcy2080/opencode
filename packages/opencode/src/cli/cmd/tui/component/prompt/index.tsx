@@ -586,6 +586,20 @@ export function Prompt(props: PromptProps) {
     },
   ])
 
+  // Defer submit to allow IME composition (e.g. Korean/CJK input) to finalize
+  // before reading the input value. Without this delay, the last composing
+  // character gets dropped because Enter fires before the OS commits it.
+  let submitTimer: ReturnType<typeof setTimeout> | null = null
+  function deferredSubmit() {
+    if (submitTimer) clearTimeout(submitTimer)
+    submitTimer = setTimeout(() => {
+      submitTimer = null
+      const value = input.plainText
+      setStore("prompt", "input", value)
+      submit()
+    }, 30)
+  }
+
   async function submit() {
     if (props.disabled) return
     if (autocomplete?.visible) return
@@ -992,7 +1006,7 @@ export function Prompt(props: PromptProps) {
                     input.cursorOffset = input.plainText.length
                 }
               }}
-              onSubmit={submit}
+              onSubmit={deferredSubmit}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
                   event.preventDefault()
