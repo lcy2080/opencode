@@ -27,8 +27,9 @@ import { createSimpleContext } from "./helper"
 import type { Snapshot } from "@/snapshot"
 import { useExit } from "./exit"
 import { useArgs } from "./args"
-import { batch, createEffect, on, onCleanup } from "solid-js"
+import { batch, createEffect, on, onCleanup, onMount } from "solid-js"
 import { Log } from "@/util"
+import type { Workspace } from "@opencode-ai/sdk/v2"
 import { ConsoleState, emptyConsoleState, type ConsoleState as ConsoleStateType } from "@/config/console-state"
 
 export const { use: useSync, provider: SyncProvider } = createSimpleContext({
@@ -74,6 +75,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         [key: string]: McpResource
       }
       formatter: FormatterStatus[]
+      workspaceList: Workspace[]
       vcs: VcsInfo | undefined
       path: {
         home: string
@@ -108,6 +110,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp: {},
       mcp_resource: {},
       formatter: [],
+      workspaceList: [],
       vcs: undefined,
       path: undefined,
     })
@@ -127,6 +130,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       if (pendingDeltas.size === 0) return
       const entries = [...pendingDeltas.values()]
       pendingDeltas.clear()
+
       batch(() => {
         for (const entry of entries) {
           const parts = store.part[entry.messageID]
@@ -145,6 +149,12 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           )
         }
       })
+    }
+
+    async function syncWorkspaces() {
+      const result = await sdk.client.experimental.workspace.list().catch(() => undefined)
+      if (!result?.data) return
+      setStore("workspaceList", reconcile(result.data))
     }
 
     event.subscribe((event) => {
@@ -488,6 +498,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
 
     // Flush pending deltas and clear timer on cleanup
+    onCleanup(() => {
+      if (deltaFlushTimer) {
+        clearTimeout(deltaFlushTimer)
+        deltaFlushTimer = null
+      }
+    })
+
     onCleanup(() => {
       if (deltaFlushTimer) {
         clearTimeout(deltaFlushTimer)

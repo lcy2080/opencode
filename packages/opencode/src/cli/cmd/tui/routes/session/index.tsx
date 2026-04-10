@@ -1077,8 +1077,10 @@ export function Session() {
             >
               <box height={1} />
               <For each={messages()}>
-                {(message, index) => (
-                  <Switch>
+                {(message, index) => {
+                  const parts = createMemo(() => sync.data.part[message.id] ?? [])
+                  return (
+                    <Switch>
                     <Match when={message.id === revert()?.messageID}>
                       {(function () {
                         const command = useCommandDialog()
@@ -1157,7 +1159,7 @@ export function Session() {
                           ))
                         }}
                         message={message as UserMessage}
-                        parts={sync.data.part[message.id] ?? []}
+                        parts={parts()}
                         pending={pending()}
                       />
                     </Match>
@@ -1165,11 +1167,12 @@ export function Session() {
                       <AssistantMessage
                         last={lastAssistant()?.id === message.id}
                         message={message as AssistantMessage}
-                        parts={sync.data.part[message.id] ?? []}
+                        parts={parts()}
                       />
                     </Match>
                   </Switch>
-                )}
+                  )
+                }}
               </For>
             </scrollbox>
             <box flexShrink={0}>
