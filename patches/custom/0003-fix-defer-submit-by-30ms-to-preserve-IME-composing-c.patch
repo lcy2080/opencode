@@ -1,0 +1,52 @@
+From ec0e04d1b4b6e2dac65022965483360e435a9088 Mon Sep 17 00:00:00 2001
+From: lcy2080 <lcy2080@onioncrew.com>
+Date: Fri, 10 Apr 2026 11:46:14 +0900
+Subject: [PATCH 3/3] fix: defer submit by 30ms to preserve IME composing
+ characters (Korean/CJK)
+
+When typing Korean or other CJK text via IME, pressing Enter fires the
+submit action before the OS commits the composing character. Adding a
+30ms delay allows the IME to finalize composition before reading input.
+
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+---
+ .../src/cli/cmd/tui/component/prompt/index.tsx   | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx b/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx
+index 747c61fd0..d7ba59905 100644
+--- a/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx
++++ b/packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx
+@@ -586,6 +586,20 @@ export function Prompt(props: PromptProps) {
+     },
+   ])
+ 
++  // Defer submit to allow IME composition (e.g. Korean/CJK input) to finalize
++  // before reading the input value. Without this delay, the last composing
++  // character gets dropped because Enter fires before the OS commits it.
++  let submitTimer: ReturnType<typeof setTimeout> | null = null
++  function deferredSubmit() {
++    if (submitTimer) clearTimeout(submitTimer)
++    submitTimer = setTimeout(() => {
++      submitTimer = null
++      const value = input.plainText
++      setStore("prompt", "input", value)
++      submit()
++    }, 30)
++  }
++
+   async function submit() {
+     if (props.disabled) return
+     if (autocomplete?.visible) return
+@@ -992,7 +1006,7 @@ export function Prompt(props: PromptProps) {
+                     input.cursorOffset = input.plainText.length
+                 }
+               }}
+-              onSubmit={submit}
++              onSubmit={deferredSubmit}
+               onPaste={async (event: PasteEvent) => {
+                 if (props.disabled) {
+                   event.preventDefault()
+-- 
+2.45.1.windows.1
+

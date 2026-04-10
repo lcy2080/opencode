@@ -1,0 +1,58 @@
+name: Build Custom Binary
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "packages/opencode/**"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    if: github.repository != 'anomalyco/opencode'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Get version info
+        id: version
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./packages/opencode/package.json').version")
+          SHA=$(git rev-parse --short HEAD)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "tag=custom-v${VERSION}-${SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build Windows x64
+        run: bun run packages/opencode/script/build.ts --single
+        env:
+          OPENCODE_VERSION: ${{ steps.version.outputs.version }}-custom
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-custom-windows-x64-${{ steps.version.outputs.sha }}
+          path: packages/opencode/dist/opencode-windows-x64/
+          retention-days: 30
+
+      - name: Create release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          cd packages/opencode/dist
+          7z a opencode-custom-windows-x64.zip opencode-windows-x64/
+          gh release create "${{ steps.version.outputs.tag }}" \
+            opencode-custom-windows-x64.zip \
+            --title "Custom Build ${{ steps.version.outputs.tag }}" \
+            --notes "Custom build with performance patches and IME fix. Based on upstream v${{ steps.version.outputs.version }}." \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
