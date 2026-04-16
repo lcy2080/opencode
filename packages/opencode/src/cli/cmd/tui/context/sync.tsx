@@ -75,6 +75,13 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       }
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
+      path: {
+        home: string
+        state: string
+        config: string
+        worktree: string
+        directory: string
+      } | undefined
     }>({
       provider_next: {
         all: [],
@@ -102,6 +109,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       mcp_resource: {},
       formatter: [],
       vcs: undefined,
+      path: undefined,
     })
 
     const event = useEvent()
