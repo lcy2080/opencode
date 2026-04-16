@@ -147,6 +147,12 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
         is_worktree: !!(sync.path?.worktree && sync.path.worktree !== sync.path?.directory),
       }
     },
+    get workspace() {
+      return {
+        list: () => sync.data.workspaceList,
+        get: (workspaceID: string) => sync.data.workspaceList.find((w) => w.id === workspaceID),
+      }
+    },
     session: {
       count() {
         return sync.data.session.length
