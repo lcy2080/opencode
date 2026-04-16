@@ -27,10 +27,10 @@ const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
   if (env.OPENCODE_BUMP) return "latest"
   if (env.OPENCODE_VERSION && !env.OPENCODE_VERSION.startsWith("0.0.0-")) return "latest"
-  // Fork: always use "dev" so the DB path (opencode-dev.db) stays consistent
-  // regardless of which branch happened to be checked out during the build.
+  // Fork: use "latest" so the DB path stays opencode.db (not opencode-dev.db),
+  // ensuring the fork shares the same database as the upstream stable release.
   const forkVersionPath = path.resolve(import.meta.dir, "../../../fork-version.json")
-  if (await Bun.file(forkVersionPath).exists()) return "dev"
+  if (await Bun.file(forkVersionPath).exists()) return "latest"
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
 const IS_PREVIEW = CHANNEL !== "latest"
