@@ -143,6 +143,8 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
       if (!sync.data.vcs) return
       return {
         branch: sync.data.vcs.branch,
+        default_branch: sync.data.vcs.default_branch,
+        is_worktree: !!(sync.data.path.worktree && sync.data.path.worktree !== sync.data.path.directory),
       }
     },
     session: {
