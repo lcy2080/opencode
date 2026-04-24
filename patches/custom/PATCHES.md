@@ -1,7 +1,13 @@
 # Custom Patches for opencode fork
 
-These patches are maintained on top of upstream `anomalyco/opencode` dev branch.
-Use `script/sync-upstream.sh` to rebase when upstream updates.
+These patches are maintained as regular commits on the `dev` branch, based on
+upstream `anomalyco/opencode`. Upstream sync is fully automated via the
+`Sync Upstream v2` workflow (`.github/workflows/sync-upstream-v2.yml`) — it runs
+every Mon/Thu 06:00 UTC and opens a PR against `dev` without ever force-pushing.
+
+This document describes the **intent** of each fork commit. The authoritative
+patch list is `git log upstream/dev..dev --oneline` — commits not present in
+upstream. Keep this document in sync when adding or removing fork commits.
 
 ## Versioning
 
@@ -96,15 +102,50 @@ Version is automatically computed from these two files — **no manual `OPENCODE
 
 ---
 
-## Reapplying Patches
+## Syncing with Upstream
+
+The automated workflow handles the common case. On each run it:
+
+1. Creates a dedicated `sync/upstream-YYYYMMDD-<sha7>` branch from `patches`.
+2. Rebases that branch onto `upstream/dev`.
+3. On success — pushes the branch, opens a PR against `dev`, triggers `build-custom`.
+4. On conflict — pushes the pre-rebase branch, opens a **draft** PR + issue labelled
+   `sync-blocked`. `dev` is never touched.
+
+### Triggering manually
 
 ```bash
-# Automated (recommended)
-./script/sync-upstream.sh
+# Dry-run first (no push, no PR, no issue)
+gh workflow run sync-upstream-v2.yml -f dry_run=true
 
-# Manual fresh-start (when conflict count is too high for rebase)
-git checkout -b sync/upstream-X.Y.Z upstream/dev
-# Apply patches per this document
-git checkout dev && git reset --hard sync/upstream-X.Y.Z
-git push origin dev --force-with-lease
+# Real run
+gh workflow run sync-upstream-v2.yml
 ```
+
+### Resolving a blocked sync locally
+
+```bash
+git fetch origin
+git fetch upstream
+git checkout sync/upstream-YYYYMMDD-<sha7>
+git rebase upstream/dev
+# resolve conflicts, git add, git rebase --continue
+git push --force-with-lease origin sync/upstream-YYYYMMDD-<sha7>
+# mark the draft PR ready for review, close the linked issue
+```
+
+### After a sync PR merges into `dev`
+
+Update the `patches` branch pointer to match the new `dev` tip — this keeps the
+next sync's base current and conflict count realistic:
+
+```bash
+git fetch origin
+git push origin "+$(git rev-parse origin/dev):refs/heads/patches"
+```
+
+### Archive
+
+Each Phase of this infrastructure preserves the prior state as a tag
+(`archive/patches-YYYYMMDD`) before any destructive operation. If a sync ever
+needs to be rolled back, the archive tag is the restore point.
