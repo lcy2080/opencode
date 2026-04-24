@@ -205,11 +205,15 @@ jobs:
 
       # ---- CONFLICT PATH ----
 
-      - name: Push pre-rebase branch (conflict)
+      - name: Push upstream-tip branch (conflict)
         if: steps.rebase.outputs.status == 'conflict' && inputs.dry_run != true
         run: |
-          # Branch is at patches HEAD (rebase was aborted). Push it so the PR shows
-          # current patches diff against dev; human resolves locally from here.
+          # Rebase was aborted, so the branch is at patches HEAD = dev. Pushing
+          # that would create an empty PR against dev. Reset the branch to
+          # upstream/dev instead so the PR surfaces exactly the upstream commits
+          # that failed to rebase onto fork changes. The reviewer resolves by
+          # checking out the branch, rebasing locally, and force-pushing.
+          git reset --hard upstream/dev
           git push -u origin "${{ steps.meta.outputs.branch }}"
 
       - name: Open draft PR + Issue (conflict)
@@ -234,7 +238,7 @@ jobs:
 
           - Upstream commit: [\`${UPSTREAM_SHORT}\`](https://github.com/anomalyco/opencode/commit/${UPSTREAM_SHA})
           - Workflow run: ${RUN_URL}
-          - Branch \`${BRANCH}\` was pushed at the **pre-rebase** state (rebase was aborted by CI).
+          - Branch \`${BRANCH}\` was reset to **\`upstream/dev\`** after the rebase was aborted by CI, so this PR shows exactly the upstream commits that conflicted with fork changes on \`dev\`.
 
           ### Patched files touched by upstream
           ${WARNINGS:-_None detected in risk scan — conflict is elsewhere._}
