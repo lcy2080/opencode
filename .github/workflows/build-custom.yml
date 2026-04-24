@@ -1,0 +1,64 @@
+name: Build Custom Binary
+
+on:
+  push:
+    branches:
+      - dev
+      - "sync/upstream-*"
+    paths:
+      - "packages/opencode/**"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    if: github.repository != 'anomalyco/opencode'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.11"
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Get version info
+        id: version
+        shell: bash
+        run: |
+          UPSTREAM=$(node -p "require('./packages/opencode/package.json').version")
+          FORK=$(node -p "require('./fork-version.json').version")
+          FULL="${UPSTREAM}-oc-${FORK}"
+          SHA=$(git rev-parse --short HEAD)
+          echo "upstream=$UPSTREAM" >> $GITHUB_OUTPUT
+          echo "fork=$FORK" >> $GITHUB_OUTPUT
+          echo "full=$FULL" >> $GITHUB_OUTPUT
+          echo "sha=$SHA" >> $GITHUB_OUTPUT
+          echo "tag=v${FULL}" >> $GITHUB_OUTPUT
+
+      - name: Build Windows x64
+        run: bun run packages/opencode/script/build.ts --single
+        env:
+          OPENCODE_VERSION: ${{ steps.version.outputs.full }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-${{ steps.version.outputs.full }}-windows-x64
+          path: packages/opencode/dist/opencode-windows-x64/
+          retention-days: 30
+
+      - name: Create release
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          cd packages/opencode/dist
+          7z a opencode-${{ steps.version.outputs.full }}-windows-x64.zip opencode-windows-x64/
+          gh release create "${{ steps.version.outputs.tag }}" \
+            opencode-${{ steps.version.outputs.full }}-windows-x64.zip \
+            --title "${{ steps.version.outputs.full }}" \
+            --notes "Based on upstream v${{ steps.version.outputs.upstream }}, fork v${{ steps.version.outputs.fork }}" \
+            --prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
