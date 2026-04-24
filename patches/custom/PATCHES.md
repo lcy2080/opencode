@@ -1,151 +1,141 @@
-# Custom Patches for opencode fork
+# Fork Customizations
 
-These patches are maintained as regular commits on the `dev` branch, based on
-upstream `anomalyco/opencode`. Upstream sync is fully automated via the
-`Sync Upstream v2` workflow (`.github/workflows/sync-upstream-v2.yml`) — it runs
-every Mon/Thu 06:00 UTC and opens a PR against `dev` without ever force-pushing.
+This fork (`lcy2080/opencode`) tracks upstream `anomalyco/opencode` using a
+**two-branch layout** so upstream sync is conflict-free by construction.
 
-This document describes the **intent** of each fork commit. The authoritative
-patch list is `git log upstream/dev..dev --oneline` — commits not present in
-upstream. Keep this document in sync when adding or removing fork commits.
+## Branches
+
+| Branch | Role | Updates via |
+|--------|------|-------------|
+| `dev` | Mirror of `upstream/dev`. **Zero fork commits.** | Fast-forward only. `sync-upstream-v2.yml` advances it to `upstream/dev` on every run. |
+| `release` | `dev` + fork customizations. **Build target.** | `sync-upstream-v2.yml` rebases it onto `dev` whenever `dev` advances. |
+
+The authoritative list of fork commits is `git log dev..release --oneline`.
 
 ## Versioning
 
-Format: `{upstream}-oc-{fork}` (e.g., `1.4.6-oc-1.0.0`)
+Format: `{upstream}-oc-{fork}` (e.g., `1.4.6-oc-1.0.1`).
 
-- **upstream**: `packages/opencode/package.json` version (auto-updated on sync)
-- **fork**: `fork-version.json` version (manually bumped for fork-specific changes)
+- **upstream**: `packages/opencode/package.json` version (updated with every `dev` fast-forward).
+- **fork**: `fork-version.json` version (manually bumped when adding or changing fork features).
 
-Bump fork version when adding new patches or features. Reset is not needed on upstream sync.
+`packages/script/src/index.ts` auto-derives the combined version at build time
+when `fork-version.json` exists — no `OPENCODE_VERSION` env var needed.
 
-Version is automatically computed from these two files — **no manual `OPENCODE_VERSION` env var needed** for local builds.
+## Current fork customizations
 
-## Patch 0: Fork Versioning Auto-Enforcement
+### 1. `feat: fork-version.json + auto-versioning`
+- `fork-version.json`, `packages/script/src/index.ts`
+- Auto-enforces `{upstream}-oc-{fork}` during build when the file is present.
+- **Conflict risk:** Low (isolated block in script index).
 
-**File:**
-- `packages/script/src/index.ts`
-
-**What:** When `fork-version.json` is present and `OPENCODE_VERSION` is not set, auto-compute version as `{upstream}-oc-{fork}` instead of falling back to the `0.0.0-dev-TIMESTAMP` preview format.
-
-**Why:** Prevents accidental builds with wrong version. The enforcement is in the single code path that all build scripts share, so there's nothing to forget.
-
-**Conflict Risk:** Low — isolated block inserted between two `if` branches. Upstream has no `fork-version.json` so behavior there is unchanged.
-
----
-
-## Patch 1: TUI Rendering Optimization
-
-**Files:**
+### 2. `feat(tui): batch streaming part.delta events (50ms flush)`
 - `packages/opencode/src/cli/cmd/tui/context/sync.tsx`
-- `packages/opencode/src/cli/cmd/tui/routes/session/index.tsx`
+- Accumulates streaming deltas in a Map and flushes inside `batch()` every 50ms.
+- Eliminates per-token re-render jank during long LLM responses.
+- **Conflict risk:** Medium — touches the core streaming event handler.
 
-**What:** Batch streaming delta updates (50ms flush), set `streaming={!props.message.time.completed}` to skip layout recalculation for completed messages, add timer cleanup.
+### 3. `perf(session): cache project metadata with 5s TTL in listGlobal`
+- `packages/opencode/src/session/session.ts`
+- Module-level `Map<ProjectID, ProjectInfo>` with a 5s TTL and null sentinel for missing IDs.
+- Replaces upstream's per-call fresh Map that re-queries `ProjectTable` on every page.
+- **Conflict risk:** Low — isolated around `listGlobal`.
 
-**Why:** Every LLM streaming token triggered an immediate store update and re-render, causing UI jank. Completed messages kept recalculating layout unnecessarily.
+### 4. `feat(tui): emergency ANSI cleanup on abnormal exit`
+- `packages/opencode/src/cli/cmd/tui/app.tsx`, `context/exit.tsx`
+- Registers `process.on("exit")` with ANSI reset sequences for mouse tracking,
+  Kitty keyboard protocol, alternate screen, cursor, bracketed paste, raw mode.
+- Adds SIGTERM/SIGINT handlers routing through the existing `exit()` path.
+- Prevents terminal garbage after OOM/crash.
+- **Conflict risk:** Low — additive, positioned right after `createCliRenderer()`.
 
-**Architecture Note:** Ported to upstream's `useEvent` / `event.subscribe()` architecture (1.4.6+). Uses solid-js `batch()` already imported by upstream.
+### 5. `feat(dist): Windows/Unix wrapper scripts`
+- `packages/opencode/script/wrapper/opencode-wrapper.cmd`, `opencode-wrapper.sh`
+- Safety net for SIGKILL where in-process cleanup cannot run. Wrappers invoke
+  the core binary and issue ANSI resets via PowerShell / `printf + stty sane`
+  if the process exits non-zero.
+- **Conflict risk:** None (fork-only files).
 
-**Conflict Risk:** Medium — touches core streaming event handler in sync.tsx.
+### 6. `feat(tui): sidebar git-info plugin`
+- New `packages/opencode/src/cli/cmd/tui/feature-plugins/sidebar/git-info.tsx`
+- Registered in `packages/opencode/src/cli/cmd/tui/plugin/internal.ts`.
+- `packages/opencode/src/cli/cmd/tui/plugin/api.tsx` exposes `default_branch`
+  and `is_worktree` on `state.vcs`.
+- `packages/plugin/src/tui.ts` extends `VcsInfo` public type.
+- `default_branch` comes from upstream's `vcs.Info` schema (already populated).
+- `is_worktree` is derived from `sync.path` so it is SDK-schema-free and
+  null-safe.
+- **Conflict risk:** Low for the new file; Medium if upstream reshapes
+  `plugin/internal.ts` or `plugin/api.tsx`.
 
----
+### 7. `chore(.opencode): enable opencode provider options block`
+- `.opencode/opencode.jsonc`
+- Changes `"provider": {}` to `"provider": { "opencode": { "options": {} } }`
+  so per-repo provider overrides can be added without touching the user's
+  global config.
+- **Conflict risk:** Low.
 
-## Patch 2: DB Query Optimization
+### 8. `ci: fork sync infrastructure`
+- `.github/workflows/build-custom.yml` — Windows x64 binary on `release` pushes.
+- `.github/workflows/sync-upstream-v2.yml` — scheduled dev/release sync.
+- `.husky/post-merge` — post-pull notice when upstream has new commits.
+- `patches/custom/PATCHES.md` — this document.
+- **Conflict risk:** None (fork-only files).
 
-**Files:**
-- `packages/opencode/src/session/session.ts` (was `session/index.ts` in ≤1.4.2)
+## Dropped patches (upstream adopted or improved)
 
-**What:** Add 5s TTL project metadata cache in `listGlobal()`. Cache null for missing project IDs to avoid repeated lookups.
+| Original fork patch | Upstream status |
+|---------------------|----------------|
+| IME 30ms submit defer | 1.4.6+ does double-defer + direct `plainText` read (more robust). |
+| Cursor encoding (`id\|time` string) | 1.4.6+ uses the identical format with legacy base64 fallback. |
+| `sync.data.path?` null-safety on `is_worktree` | Already handled upstream via `sync.path` getter. |
 
-**Why:** Redundant DB queries on every paginated session list request.
+## Syncing with upstream
 
-**Note:** Cursor encoding optimization (id|time string format + legacy base64 fallback) was adopted by upstream in 1.4.6 — no longer needed as a fork patch.
+### Automatic (preferred)
 
-**Conflict Risk:** Low — isolated cache block around the DB query in `listGlobal()`.
+Scheduled `sync-upstream-v2.yml` runs Mon/Thu 06:00 UTC. On each run:
 
----
+1. Fast-forwards `dev` to `upstream/dev` (conflict-free by contract).
+2. Rebases `release` onto the new `dev`.
+   - **Success:** `release` is force-with-lease pushed; `build-custom` picks
+     it up and produces the next Windows binary.
+   - **Conflict:** a snapshot branch `sync/release-rebase-YYYYMMDD-<sha7>`
+     is pushed at `upstream/dev` and a draft PR (base = `release`) is
+     opened so the maintainer resolves locally.
 
-## Patch 3: Terminal Emergency Cleanup
-
-**Files:**
-- `packages/opencode/src/cli/cmd/tui/app.tsx`
-- `packages/opencode/src/cli/cmd/tui/context/exit.tsx`
-
-**What:** On abnormal exit (OOM, uncaught exception), write ANSI disable sequences via `writeSync` to reset mouse tracking, Kitty keyboard protocol, alternate screen, cursor, and raw mode. Add SIGTERM/SIGINT handlers to `exit.tsx`.
-
-**Why:** When opencode crashes without calling `renderer.destroy()`, mouse tracking remains enabled and produces garbage characters in the shell on mouse movement.
-
-**Conflict Risk:** Low — `emergencyCleanup` block inserted after `createCliRenderer()`, isolated from upstream logic.
-
----
-
-## Patch 4: Sidebar Git Worktree Display
-
-**Files:**
-- `packages/opencode/src/cli/cmd/tui/feature-plugins/sidebar/git-info.tsx` (new)
-- `packages/opencode/src/cli/cmd/tui/plugin/api.tsx`
-- `packages/plugin/src/tui.ts`
-
-**What:** Show `default_branch` and `is_worktree` flag in VCS info. New `git-info.tsx` sidebar component.
-
-**Why:** Git worktree users need to see which branch is the default and whether they are in a worktree.
-
-**Conflict Risk:** Low for new file; Medium for `api.tsx` and `tui.ts` type extensions.
-
----
-
-## Dropped Patches (adopted by upstream)
-
-| Patch | Upstream version | Notes |
-|-------|-----------------|-------|
-| IME 30ms timer fix | 1.4.6 | Upstream uses double-defer + direct `plainText` read in `submit()`. More robust than our 30ms approach. |
-| Cursor encoding (id\|time format) | 1.4.6 | Upstream adopted identical `id\|time` string format with legacy base64 fallback. |
-
----
-
-## Syncing with Upstream
-
-The automated workflow handles the common case. On each run it:
-
-1. Creates a dedicated `sync/upstream-YYYYMMDD-<sha7>` branch from `patches`.
-2. Rebases that branch onto `upstream/dev`.
-3. On success — pushes the branch, opens a PR against `dev`, triggers `build-custom`.
-4. On conflict — pushes the pre-rebase branch, opens a **draft** PR + issue labelled
-   `sync-blocked`. `dev` is never touched.
-
-### Triggering manually
+Manual trigger:
 
 ```bash
-# Dry-run first (no push, no PR, no issue)
-gh workflow run sync-upstream-v2.yml -f dry_run=true
-
-# Real run
-gh workflow run sync-upstream-v2.yml
+gh workflow run sync-upstream-v2.yml                  # real run
+gh workflow run sync-upstream-v2.yml -f dry_run=true  # report-only
 ```
 
-### Resolving a blocked sync locally
+### Manual resolution of a blocked rebase
 
 ```bash
 git fetch origin
-git fetch upstream
-git checkout sync/upstream-YYYYMMDD-<sha7>
-git rebase upstream/dev
+git checkout release
+git rebase origin/dev
 # resolve conflicts, git add, git rebase --continue
-git push --force-with-lease origin sync/upstream-YYYYMMDD-<sha7>
-# mark the draft PR ready for review, close the linked issue
+git push origin release --force-with-lease
+# close the draft sync PR; the resolved release is already pushed
 ```
 
-### After a sync PR merges into `dev`
+## Adding a new fork customization
 
-Update the `patches` branch pointer to match the new `dev` tip — this keeps the
-next sync's base current and conflict count realistic:
+1. Branch off `release`.
+2. Land the change with a conventional commit message (`feat`, `perf`, `fix`).
+3. Merge to `release` (no PR against `dev` — `dev` is upstream-only).
+4. Bump `fork-version.json` if the change affects runtime behavior.
+5. Add a section to this document describing intent and conflict risk.
 
-```bash
-git fetch origin
-git push origin "+$(git rev-parse origin/dev):refs/heads/patches"
-```
+## Safety tags
 
-### Archive
+The branch restructure preserved two archive tags:
 
-Each Phase of this infrastructure preserves the prior state as a tag
-(`archive/patches-YYYYMMDD`) before any destructive operation. If a sync ever
-needs to be rolled back, the archive tag is the restore point.
+- `archive/dev-pre-sync-20260424` — the original 41-commit `dev` on upstream 1.4.2.
+- `archive/pre-branch-restructure-20260424` — `release`'s starting state (dev+9 customizations on upstream 1.4.6).
+
+Neither is referenced by the sync workflow; they exist solely to make the
+2026-04-24 restructure revertable.

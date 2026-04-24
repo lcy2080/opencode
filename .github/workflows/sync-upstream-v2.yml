@@ -1,16 +1,22 @@
 name: Sync Upstream v2
 
-# Upstream migration workflow.
+# Upstream sync workflow (post-restructure 2-branch layout).
 #
-# Replaces the old sync-upstream.yml (which force-pushed both `patches` and `dev`).
-# This version never touches `dev` or `patches` directly. Instead, it:
-#   1. Creates a dedicated `sync/upstream-YYYYMMDD-<sha7>` branch from `patches`.
-#   2. Rebases that branch onto `upstream/dev`.
-#   3. On success: pushes the branch and opens an auto-PR against `dev` for human review.
-#   4. On conflict: pushes the pre-rebase branch, opens a draft PR, creates an Issue.
+# Branches:
+#   dev      — mirror of upstream/dev. Contains zero fork commits. Advances by
+#              fast-forward only, so upstream sync is guaranteed conflict-free.
+#   release  — dev + fork customizations. Build target. Rebased onto dev
+#              whenever dev advances.
 #
-# The branch is the only push target; merging into `dev` is a manual decision after
-# reviewing the diff and waiting for `build-custom.yml` to finish on the sync branch.
+# This workflow:
+#   1. Fetches upstream/dev and fast-forwards local dev to it, then pushes dev.
+#   2. Rebases release onto the new dev on a temporary worktree:
+#      - Success: force-with-lease push release directly. Build-custom takes
+#        over from there and produces the new binary artifact.
+#      - Conflict: push the conflict state to a dedicated
+#        sync/release-rebase-<date>-<sha> branch and open a draft PR
+#        (base=release) so the maintainer can resolve locally.
+#   dev is never touched on failure.
 
 on:
   schedule:
@@ -18,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Do not push branch or open PR/issue. Useful for first-run validation."
+        description: "Do not push dev/release or open PRs. Useful for validation."
         type: boolean
         default: false
 
@@ -37,7 +43,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: patches
+          ref: release
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -56,192 +62,132 @@ jobs:
           gh label create sync-blocked --color d93f0b \
             --description "Upstream sync conflict requires manual resolution" 2>/dev/null || true
 
-      - name: Fetch upstream
+      - name: Fetch upstream and dev
         run: |
           git remote add upstream https://github.com/anomalyco/opencode.git
           git fetch upstream dev
+          git fetch origin dev
 
       - name: Determine sync window
         id: meta
         run: |
           UPSTREAM_SHA=$(git rev-parse upstream/dev)
+          DEV_SHA=$(git rev-parse origin/dev)
+          RELEASE_SHA=$(git rev-parse HEAD)
           UPSTREAM_SHORT=${UPSTREAM_SHA:0:7}
-          BEHIND=$(git rev-list --count patches..upstream/dev)
+          DEV_BEHIND=$(git rev-list --count origin/dev..upstream/dev)
           TODAY=$(date -u +%Y%m%d)
-          BRANCH="sync/upstream-${TODAY}-${UPSTREAM_SHORT}"
+          SYNC_BRANCH="sync/release-rebase-${TODAY}-${UPSTREAM_SHORT}"
           {
             echo "upstream_sha=$UPSTREAM_SHA"
             echo "upstream_short=$UPSTREAM_SHORT"
-            echo "behind=$BEHIND"
-            echo "branch=$BRANCH"
+            echo "dev_sha=$DEV_SHA"
+            echo "release_sha=$RELEASE_SHA"
+            echo "dev_behind=$DEV_BEHIND"
+            echo "sync_branch=$SYNC_BRANCH"
           } >> $GITHUB_OUTPUT
-          echo "Upstream ahead by $BEHIND commit(s); sync branch: $BRANCH"
+          echo "dev is ${DEV_BEHIND} commit(s) behind upstream/dev (${UPSTREAM_SHORT})."
 
       - name: Skip when already up to date
-        if: steps.meta.outputs.behind == '0'
+        if: steps.meta.outputs.dev_behind == '0'
         run: |
-          echo "Nothing to sync."
+          echo "dev is already at upstream/dev. Nothing to sync."
           exit 0
 
-      - name: Abort if sync branch already exists on origin
-        if: steps.meta.outputs.behind != '0'
+      - name: Verify dev can fast-forward to upstream/dev
+        if: steps.meta.outputs.dev_behind != '0'
         run: |
-          if git ls-remote --exit-code --heads origin "${{ steps.meta.outputs.branch }}" >/dev/null; then
-            echo "Branch ${{ steps.meta.outputs.branch }} already exists on origin — previous sync still open."
-            echo "Resolve the existing PR/branch before running again."
+          # dev must be an ancestor of upstream/dev. If dev has commits upstream
+          # doesn't, the mirror has drifted — fail loudly rather than rewrite.
+          if ! git merge-base --is-ancestor origin/dev upstream/dev; then
+            echo "::error::origin/dev has commits not present in upstream/dev — mirror has drifted."
+            echo "Local ahead commits:"
+            git log --oneline upstream/dev..origin/dev
             exit 1
           fi
 
-      - name: Check patched-file conflict risk
-        if: steps.meta.outputs.behind != '0'
-        id: risk
+      - name: Fast-forward dev to upstream/dev
+        if: steps.meta.outputs.dev_behind != '0' && inputs.dry_run != true
         run: |
-          LAST_SYNCED=$(git merge-base patches upstream/dev)
-          CHANGED=$(git diff --name-only "$LAST_SYNCED" upstream/dev)
-          PATCHED_FILES=(
-            "packages/opencode/src/cli/cmd/tui/context/sync.tsx"
-            "packages/opencode/src/cli/cmd/tui/routes/session/index.tsx"
-            "packages/opencode/src/cli/cmd/tui/component/prompt/index.tsx"
-            "packages/opencode/src/cli/cmd/tui/plugin/api.tsx"
-            "packages/opencode/src/session/session.ts"
-            "packages/opencode/src/cli/cmd/tui/app.tsx"
-            "packages/opencode/src/cli/cmd/tui/context/exit.tsx"
-          )
-          WARNED=""
-          for f in "${PATCHED_FILES[@]}"; do
-            if echo "$CHANGED" | grep -qx "$f"; then
-              WARNED+="- \`$f\`"$'\n'
-            fi
-          done
-          {
-            echo "warnings<<RISK_EOF"
-            printf '%s' "$WARNED"
-            echo "RISK_EOF"
-          } >> $GITHUB_OUTPUT
-          if [ -n "$WARNED" ]; then
-            echo "::warning::Upstream modified patched files; rebase may conflict."
-            printf '%s\n' "$WARNED"
-          fi
+          # Push dev directly to upstream's current commit. Fast-forward only,
+          # force-with-lease protects against races with other pushes.
+          git push origin "${{ steps.meta.outputs.upstream_sha }}:refs/heads/dev" \
+            --force-with-lease="dev:${{ steps.meta.outputs.dev_sha }}"
 
-      - name: Create sync branch from patches
-        if: steps.meta.outputs.behind != '0'
-        run: |
-          git checkout -b "${{ steps.meta.outputs.branch }}" patches
-
-      - name: Attempt rebase onto upstream/dev
-        if: steps.meta.outputs.behind != '0'
+      - name: Rebase release onto upstream/dev (on a worktree)
+        if: steps.meta.outputs.dev_behind != '0'
         id: rebase
         continue-on-error: true
         shell: bash
         run: |
+          # Use a worktree so the rebase state stays isolated from the main
+          # checkout (release). On failure we push a snapshot branch from the
+          # worktree without affecting anything else.
+          git worktree add --detach /tmp/release-rebase HEAD
+          cd /tmp/release-rebase
           set +e
           set -o pipefail
-          git rebase upstream/dev 2>&1 | tee /tmp/rebase.log
+          git rebase "${{ steps.meta.outputs.upstream_sha }}" 2>&1 | tee /tmp/rebase.log
           RC=${PIPESTATUS[0]}
           set +o pipefail
           set -e
           if [ "$RC" -eq 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
+            NEW_SHA=$(git rev-parse HEAD)
+            echo "new_release_sha=$NEW_SHA" >> $GITHUB_OUTPUT
           else
             echo "status=conflict" >> $GITHUB_OUTPUT
-            # Capture conflicting files before abort for the issue/PR body.
             git diff --name-only --diff-filter=U > /tmp/conflict-files.txt || true
             git rebase --abort || true
           fi
 
       # ---- SUCCESS PATH ----
 
-      - name: Push sync branch (success)
+      - name: Force-with-lease push release
         if: steps.rebase.outputs.status == 'success' && inputs.dry_run != true
         run: |
-          git push -u origin "${{ steps.meta.outputs.branch }}"
-
-      - name: Open auto-PR (success)
-        if: steps.rebase.outputs.status == 'success' && inputs.dry_run != true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
-          UPSTREAM_SHORT: ${{ steps.meta.outputs.upstream_short }}
-          UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
-          BEHIND: ${{ steps.meta.outputs.behind }}
-          WARNINGS: ${{ steps.risk.outputs.warnings }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          BODY=$(cat <<EOF
-          ## Upstream sync
-
-          Rebased \`patches\` onto \`upstream/dev\` at \`${UPSTREAM_SHORT}\` (${BEHIND} new commit(s)).
-
-          - Upstream commit: [\`${UPSTREAM_SHORT}\`](https://github.com/anomalyco/opencode/commit/${UPSTREAM_SHA})
-          - Workflow run: ${RUN_URL}
-          - Build artifact: check \`Build Custom Binary\` status on this branch.
-
-          ### Patched files touched by upstream
-          ${WARNINGS:-_None — patched files untouched by upstream in this window._}
-
-          ### Review checklist
-          - [ ] \`build-custom\` workflow green on this branch
-          - [ ] No runtime regressions in TUI streaming / sessions
-          - [ ] \`patches/custom/PATCHES.md\` still reflects actual fork commits
-          - [ ] Merge method: **rebase** or **merge** (do NOT squash — preserves fork commit history)
-
-          ### Post-merge maintenance
-          After this PR merges into \`dev\`, update \`patches\` branch to match:
-          \`\`\`
-          git fetch origin
-          git checkout patches
-          git reset --hard origin/dev
-          git push origin patches --force-with-lease
-          \`\`\`
-          EOF
-          )
-          gh pr create \
-            --base dev \
-            --head "$BRANCH" \
-            --title "chore(sync): upstream -> ${UPSTREAM_SHORT} (${BEHIND} commits)" \
-            --body "$BODY" \
-            --label upstream-sync
+          cd /tmp/release-rebase
+          # Use the pre-rebase release SHA as the lease guard so a concurrent
+          # release push doesn't get clobbered.
+          git push origin HEAD:refs/heads/release \
+            --force-with-lease="release:${{ steps.meta.outputs.release_sha }}"
+          echo "release advanced to ${{ steps.rebase.outputs.new_release_sha }} — build-custom will pick it up."
 
       # ---- CONFLICT PATH ----
 
-      - name: Push upstream-tip branch (conflict)
+      - name: Push conflict snapshot branch
         if: steps.rebase.outputs.status == 'conflict' && inputs.dry_run != true
         run: |
-          # Rebase was aborted, so the branch is at patches HEAD = dev. Pushing
-          # that would create an empty PR against dev. Reset the branch to
-          # upstream/dev instead so the PR surfaces exactly the upstream commits
-          # that failed to rebase onto fork changes. The reviewer resolves by
-          # checking out the branch, rebasing locally, and force-pushing.
-          git reset --hard upstream/dev
-          git push -u origin "${{ steps.meta.outputs.branch }}"
+          # Worktree is back at pre-rebase release HEAD after abort. Reset it
+          # to upstream/dev so the PR shows the upstream commits that release
+          # must absorb. The maintainer resolves the rebase locally and
+          # force-pushes to release.
+          cd /tmp/release-rebase
+          git reset --hard "${{ steps.meta.outputs.upstream_sha }}"
+          git push origin "HEAD:refs/heads/${{ steps.meta.outputs.sync_branch }}" --force
 
-      - name: Open draft PR + Issue (conflict)
+      - name: Open draft PR (conflict)
         if: steps.rebase.outputs.status == 'conflict' && inputs.dry_run != true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          BRANCH: ${{ steps.meta.outputs.branch }}
+          SYNC_BRANCH: ${{ steps.meta.outputs.sync_branch }}
           UPSTREAM_SHORT: ${{ steps.meta.outputs.upstream_short }}
           UPSTREAM_SHA: ${{ steps.meta.outputs.upstream_sha }}
-          BEHIND: ${{ steps.meta.outputs.behind }}
-          WARNINGS: ${{ steps.risk.outputs.warnings }}
+          DEV_BEHIND: ${{ steps.meta.outputs.dev_behind }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           CONFLICTS=$(cat /tmp/conflict-files.txt 2>/dev/null | sed 's/^/- /' || echo "_none captured_")
           LOG_TAIL=$(tail -n 80 /tmp/rebase.log 2>/dev/null || echo "log unavailable")
 
           BODY=$(cat <<EOF
-          ## :rotating_light: Upstream sync blocked
+          ## :rotating_light: release rebase blocked
 
-          Rebase of \`patches\` onto \`upstream/dev\` at \`${UPSTREAM_SHORT}\` failed (${BEHIND} new upstream commit(s)).
+          \`dev\` was fast-forwarded to upstream \`${UPSTREAM_SHORT}\` (${DEV_BEHIND} new commit(s)), but rebasing \`release\` onto it hit conflicts.
 
           - Upstream commit: [\`${UPSTREAM_SHORT}\`](https://github.com/anomalyco/opencode/commit/${UPSTREAM_SHA})
           - Workflow run: ${RUN_URL}
-          - Branch \`${BRANCH}\` was reset to **\`upstream/dev\`** after the rebase was aborted by CI, so this PR shows exactly the upstream commits that conflicted with fork changes on \`dev\`.
-
-          ### Patched files touched by upstream
-          ${WARNINGS:-_None detected in risk scan — conflict is elsewhere._}
+          - Branch \`${SYNC_BRANCH}\` is at \`upstream/dev\` — it surfaces the upstream delta that conflicts with release customizations.
 
           ### Conflicting files
           ${CONFLICTS}
@@ -254,58 +200,45 @@ jobs:
           ### Manual resolution
           \`\`\`bash
           git fetch origin
-          git fetch upstream
-          git checkout ${BRANCH}
-          git rebase upstream/dev
+          git checkout release
+          git rebase origin/dev
           # resolve conflicts, git add, git rebase --continue
-          git push --force-with-lease origin ${BRANCH}
-          # then mark this PR ready for review
+          git push origin release --force-with-lease
+          # close this PR (it was only a notice — the resolved release is elsewhere)
           \`\`\`
           EOF
           )
 
-          PR_URL=$(gh pr create \
+          gh pr create \
             --draft \
-            --base dev \
-            --head "$BRANCH" \
-            --title "[BLOCKED] sync: rebase conflict on ${UPSTREAM_SHORT}" \
+            --base release \
+            --head "$SYNC_BRANCH" \
+            --title "[BLOCKED] release rebase conflict on ${UPSTREAM_SHORT}" \
             --body "$BODY" \
             --label upstream-sync \
-            --label sync-blocked)
+            --label sync-blocked || true
 
-          # Issue creation is best-effort. Forks often have Issues disabled.
-          # The draft PR is the primary surface; the issue is just a mirror.
-          if ! gh issue create \
-              --title "Upstream sync blocked at ${UPSTREAM_SHORT}" \
-              --body "See draft PR: ${PR_URL}" \
-              --label upstream-sync \
-              --label sync-blocked; then
-            echo "::warning::Issue creation failed (likely Issues are disabled on this repo)."
-            echo "PR link: ${PR_URL}"
-          fi
+      - name: Cleanup worktree
+        if: always() && steps.rebase.outcome != 'skipped'
+        run: |
+          git worktree remove --force /tmp/release-rebase 2>/dev/null || true
 
       # ---- DRY-RUN REPORT ----
 
       - name: Dry-run summary
-        if: inputs.dry_run == true && steps.meta.outputs.behind != '0'
+        if: inputs.dry_run == true && steps.meta.outputs.dev_behind != '0'
         env:
-          BRANCH: ${{ steps.meta.outputs.branch }}
           UPSTREAM_SHORT: ${{ steps.meta.outputs.upstream_short }}
-          BEHIND: ${{ steps.meta.outputs.behind }}
+          DEV_BEHIND: ${{ steps.meta.outputs.dev_behind }}
           REBASE_STATUS: ${{ steps.rebase.outputs.status }}
-          WARNINGS: ${{ steps.risk.outputs.warnings }}
+          SYNC_BRANCH: ${{ steps.meta.outputs.sync_branch }}
         shell: bash
         run: |
           {
-            echo "### Dry run — no push, no PR, no issue"
+            echo "### Dry run — no push, no PR"
             echo ""
-            echo "- Sync branch: \`${BRANCH}\`"
             echo "- Upstream commit: \`${UPSTREAM_SHORT}\`"
-            echo "- Behind: ${BEHIND} commit(s)"
-            echo "- Rebase outcome: ${REBASE_STATUS}"
-            if [ -n "${WARNINGS}" ]; then
-              echo ""
-              echo "**Patched files touched by upstream:**"
-              printf '%s\n' "${WARNINGS}"
-            fi
+            echo "- dev behind by: ${DEV_BEHIND} commit(s)"
+            echo "- Rebase of release onto upstream/dev: **${REBASE_STATUS}**"
+            echo "- Sync branch that would be used on conflict: \`${SYNC_BRANCH}\`"
           } >> "$GITHUB_STEP_SUMMARY"
