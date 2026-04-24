@@ -2,7 +2,9 @@ name: Build Custom Binary
 
 on:
   push:
-    branches: [dev]
+    branches:
+      - dev
+      - "sync/upstream-*"
     paths:
       - "packages/opencode/**"
   workflow_dispatch:
