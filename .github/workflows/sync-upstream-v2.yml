@@ -273,11 +273,16 @@ jobs:
             --label upstream-sync \
             --label sync-blocked)
 
-          gh issue create \
-            --title "Upstream sync blocked at ${UPSTREAM_SHORT}" \
-            --body "See draft PR: ${PR_URL}" \
-            --label upstream-sync \
-            --label sync-blocked
+          # Issue creation is best-effort. Forks often have Issues disabled.
+          # The draft PR is the primary surface; the issue is just a mirror.
+          if ! gh issue create \
+              --title "Upstream sync blocked at ${UPSTREAM_SHORT}" \
+              --body "See draft PR: ${PR_URL}" \
+              --label upstream-sync \
+              --label sync-blocked; then
+            echo "::warning::Issue creation failed (likely Issues are disabled on this repo)."
+            echo "PR link: ${PR_URL}"
+          fi
 
       # ---- DRY-RUN REPORT ----
 
