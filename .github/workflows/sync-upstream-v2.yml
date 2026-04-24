@@ -122,12 +122,15 @@ jobs:
         if: steps.meta.outputs.behind != '0'
         id: rebase
         continue-on-error: true
+        shell: bash
         run: |
           set +e
+          set -o pipefail
           git rebase upstream/dev 2>&1 | tee /tmp/rebase.log
-          RC=$?
+          RC=${PIPESTATUS[0]}
+          set +o pipefail
           set -e
-          if [ $RC -eq 0 ]; then
+          if [ "$RC" -eq 0 ]; then
             echo "status=success" >> $GITHUB_OUTPUT
           else
             echo "status=conflict" >> $GITHUB_OUTPUT
@@ -264,15 +267,24 @@ jobs:
 
       - name: Dry-run summary
         if: inputs.dry_run == true && steps.meta.outputs.behind != '0'
+        env:
+          BRANCH: ${{ steps.meta.outputs.branch }}
+          UPSTREAM_SHORT: ${{ steps.meta.outputs.upstream_short }}
+          BEHIND: ${{ steps.meta.outputs.behind }}
+          REBASE_STATUS: ${{ steps.rebase.outputs.status }}
+          WARNINGS: ${{ steps.risk.outputs.warnings }}
+        shell: bash
         run: |
-          echo "### Dry run — no push, no PR, no issue" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- Sync branch: \`${{ steps.meta.outputs.branch }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Upstream commit: \`${{ steps.meta.outputs.upstream_short }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "- Behind: ${{ steps.meta.outputs.behind }} commit(s)" >> $GITHUB_STEP_SUMMARY
-          echo "- Rebase outcome: ${{ steps.rebase.outputs.status }}" >> $GITHUB_STEP_SUMMARY
-          if [ -n "${{ steps.risk.outputs.warnings }}" ]; then
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Patched files touched by upstream:**" >> $GITHUB_STEP_SUMMARY
-            echo "${{ steps.risk.outputs.warnings }}" >> $GITHUB_STEP_SUMMARY
-          fi
+          {
+            echo "### Dry run — no push, no PR, no issue"
+            echo ""
+            echo "- Sync branch: \`${BRANCH}\`"
+            echo "- Upstream commit: \`${UPSTREAM_SHORT}\`"
+            echo "- Behind: ${BEHIND} commit(s)"
+            echo "- Rebase outcome: ${REBASE_STATUS}"
+            if [ -n "${WARNINGS}" ]; then
+              echo ""
+              echo "**Patched files touched by upstream:**"
+              printf '%s\n' "${WARNINGS}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
