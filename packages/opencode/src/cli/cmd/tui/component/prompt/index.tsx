@@ -1,15 +1,16 @@
-import { BoxRenderable, TextareaRenderable, MouseEvent, PasteEvent, decodePasteBytes, t, dim, fg } from "@opentui/core"
+import { BoxRenderable, TextareaRenderable, MouseEvent, PasteEvent, decodePasteBytes } from "@opentui/core"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
 import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
-import { Filesystem } from "@/util/filesystem"
+import { Filesystem } from "@/util"
 import { useLocal } from "@tui/context/local"
 import { useTheme } from "@tui/context/theme"
 import { EmptyBorder, SplitBorder } from "@tui/component/border"
 import { useSDK } from "@tui/context/sdk"
 import { useRoute } from "@tui/context/route"
 import { useSync } from "@tui/context/sync"
+import { useEvent } from "@tui/context/event"
 import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
@@ -20,13 +21,13 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useCommandDialog } from "../dialog-command"
 import { useRenderer, type JSX } from "@opentui/solid"
-import { Editor } from "@tui/util/editor"
+import * as Editor from "@tui/util/editor"
 import { useExit } from "../../context/exit"
-import { Clipboard } from "../../util/clipboard"
+import * as Clipboard from "../../util/clipboard"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
-import { Locale } from "@/util/locale"
+import { Locale } from "@/util"
 import { formatDuration } from "@/util/format"
 import { createColors, createFrames } from "../../ui/spinner.ts"
 import { useDialog } from "@tui/ui/dialog"
@@ -36,6 +37,7 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { useArgs } from "@tui/context/args"
 
 export type PromptProps = {
   sessionID?: string
@@ -80,6 +82,7 @@ export function Prompt(props: PromptProps) {
 
   const keybind = useKeybind()
   const local = useLocal()
+  const args = useArgs()
   const sdk = useSDK()
   const route = useRoute()
   const sync = useSync()
@@ -115,8 +118,9 @@ export function Prompt(props: PromptProps) {
   const agentStyleId = syntax().getStyleId("extmark.agent")!
   const pasteStyleId = syntax().getStyleId("extmark.paste")!
   let promptPartTypeId = 0
+  const event = useEvent()
 
-  sdk.event.on(TuiEvent.PromptAppend.type, (evt) => {
+  event.on(TuiEvent.PromptAppend.type, (evt) => {
     if (!input || input.isDestroyed) return
     input.insertText(evt.properties.text)
     setTimeout(() => {
@@ -200,7 +204,8 @@ export function Prompt(props: PromptProps) {
       // Only set agent if it's a primary agent (not a subagent)
       const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
       if (msg.agent && isPrimaryAgent) {
-        local.agent.set(msg.agent)
+        // Keep command line --agent if specified.
+        if (!args.agent) local.agent.set(msg.agent)
         if (msg.model) {
           local.model.set(msg.model)
           local.model.variant.set(msg.model.variant)
@@ -230,7 +235,7 @@ export function Prompt(props: PromptProps) {
         hidden: true,
         onSelect: (dialog) => {
           if (!input.focused) return
-          submit()
+          void submit()
           dialog.clear()
         },
       },
@@ -275,7 +280,7 @@ export function Prompt(props: PromptProps) {
           }, 5000)
 
           if (store.interrupt >= 2) {
-            sdk.client.session.abort({
+            void sdk.client.session.abort({
               sessionID: props.sessionID,
             })
             setStore("interrupt", 0)
@@ -424,7 +429,7 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
     },
     submit() {
-      submit()
+      void submit()
     },
   }
 
@@ -601,17 +606,24 @@ export function Prompt(props: PromptProps) {
   }
 
   async function submit() {
+    // IME: double-defer may fire before onContentChange flushes the last
+    // composed character (e.g. Korean hangul) to the store, so read
+    // plainText directly and sync before any downstream reads.
+    if (input && !input.isDestroyed && input.plainText !== store.prompt.input) {
+      setStore("prompt", "input", input.plainText)
+      syncExtmarksWithPromptParts()
+    }
     if (props.disabled) return
     if (autocomplete?.visible) return
     if (!store.prompt.input) return
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
-      exit()
+      void exit()
       return
     }
     const selectedModel = local.model.current()
     if (!selectedModel) {
-      promptModelWarning()
+      void promptModelWarning()
       return
     }
 
@@ -662,7 +674,7 @@ export function Prompt(props: PromptProps) {
     const variant = local.model.variant.current()
 
     if (store.mode === "shell") {
-      sdk.client.session.shell({
+      void sdk.client.session.shell({
         sessionID,
         agent: local.agent.current().name,
         model: {
@@ -687,7 +699,7 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      sdk.client.session.command({
+      void sdk.client.session.command({
         sessionID,
         command: command.slice(1),
         arguments: args,
@@ -1206,7 +1218,7 @@ export function Prompt(props: PromptProps) {
                       const r = retry()
                       if (!r) return
                       if (isTruncated()) {
-                        DialogAlert.show(dialog, "Retry Error", r.message)
+                        void DialogAlert.show(dialog, "Retry Error", r.message)
                       }
                     }
 

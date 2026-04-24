@@ -27,12 +27,29 @@ const CHANNEL = await (async () => {
   if (env.OPENCODE_CHANNEL) return env.OPENCODE_CHANNEL
   if (env.OPENCODE_BUMP) return "latest"
   if (env.OPENCODE_VERSION && !env.OPENCODE_VERSION.startsWith("0.0.0-")) return "latest"
+  // Fork: use "latest" so the DB path stays opencode.db (not opencode-dev.db),
+  // ensuring the fork shares the same database as the upstream stable release.
+  const forkVersionPath = path.resolve(import.meta.dir, "../../../fork-version.json")
+  if (await Bun.file(forkVersionPath).exists()) return "latest"
   return await $`git branch --show-current`.text().then((x) => x.trim())
 })()
 const IS_PREVIEW = CHANNEL !== "latest"
 
 const VERSION = await (async () => {
   if (env.OPENCODE_VERSION) return env.OPENCODE_VERSION
+
+  // Fork auto-detection: if fork-version.json exists, compute {upstream}-oc-{fork}
+  // This enforces the versioning convention without requiring OPENCODE_VERSION to be set manually.
+  const forkVersionPath = path.resolve(import.meta.dir, "../../../fork-version.json")
+  const forkFile = Bun.file(forkVersionPath)
+  if (await forkFile.exists()) {
+    const fork = await forkFile.json()
+    const upstreamPkg = await Bun.file(path.resolve(import.meta.dir, "../../../packages/opencode/package.json")).json()
+    const computed = `${upstreamPkg.version}-oc-${fork.version}`
+    console.log(`[versioning] fork-version.json detected → ${computed}`)
+    return computed
+  }
+
   if (IS_PREVIEW) return `0.0.0-${CHANNEL}-${new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "")}`
   const version = await fetch("https://registry.npmjs.org/opencode-ai/latest")
     .then((res) => {
