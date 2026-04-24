@@ -46,6 +46,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Ensure labels exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh label create upstream-sync --color 0e8a16 \
+            --description "Automated upstream sync PRs and issues" 2>/dev/null || true
+          gh label create sync-blocked --color d93f0b \
+            --description "Upstream sync conflict requires manual resolution" 2>/dev/null || true
+
       - name: Fetch upstream
         run: |
           git remote add upstream https://github.com/anomalyco/opencode.git
